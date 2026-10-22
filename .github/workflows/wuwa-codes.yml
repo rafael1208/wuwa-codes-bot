@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "*/30 * * * *"   # a cada 30 minutos
   workflow_dispatch:          # botão "Run workflow" para rodar na hora
+    inputs:
+      dry_run:
+        description: "Só testar (não posta no Discord)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -29,6 +34,7 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_ROLE_ID: ${{ secrets.DISCORD_ROLE_ID }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: python wuwa_codes.py
 
       - name: Salvar lista de códigos já enviados
