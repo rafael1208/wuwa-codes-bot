@@ -22,16 +22,40 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup, NavigableString
 
+try:  # imita o navegador Chrome (TLS), o que costuma passar pelo Cloudflare
+    from curl_cffi import requests as cffi_requests
+except ImportError:  # pragma: no cover
+    cffi_requests = None
+
 SOURCE_URL = "https://www.prydwen.gg/wuthering-waves/codes"
 STATE_FILE = Path(__file__).with_name("sent_codes.json")
 CODE_RE = re.compile(r"^[A-Z0-9]{6,24}$")
-HEADERS = {"User-Agent": "Mozilla/5.0 (wuwa-codes-discord-bot)"}
+HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.prydwen.gg/",
+}
 
 
-def fetch_html(url: str = SOURCE_URL) -> str:
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    return resp.text
+def fetch_html(url: str = SOURCE_URL, attempts: int = 3) -> str:
+    """Baixa a página fingindo ser o Chrome; tenta algumas vezes antes de desistir."""
+    last_err = None
+    for i in range(attempts):
+        try:
+            if cffi_requests is not None:
+                resp = cffi_requests.get(url, headers=HEADERS, impersonate="chrome", timeout=30)
+            else:
+                ua = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"}
+                resp = requests.get(url, headers={**HEADERS, **ua}, timeout=30)
+            resp.raise_for_status()
+            return resp.text
+        except Exception as e:  # 403 do Cloudflare, timeout etc.
+            last_err = e
+            print(f"Tentativa {i + 1}/{attempts} falhou: {e}")
+            if i < attempts - 1:
+                time.sleep(5 * (i + 1))
+    raise last_err
 
 
 def parse_active_codes(html: str) -> dict:
@@ -146,7 +170,15 @@ def main() -> int:
         print("Falta o segredo DISCORD_WEBHOOK_URL.")
         return 1
 
-    active = parse_active_codes(fetch_html())
+    try:
+        html = fetch_html()
+    except Exception as e:
+        # Bloqueio temporário do site: avisa no log e tenta de novo na próxima execução,
+        # sem marcar o workflow como falho.
+        print(f"::warning::Não consegui acessar {SOURCE_URL} ({e}). Tento de novo na próxima execução.")
+        return 0
+
+    active = parse_active_codes(html)
     if not active:
         # O WUTHERINGGIFT é fixo; se nada foi encontrado, a página mudou de formato.
         print("Nenhum código ativo encontrado. A página pode ter mudado de formato.")
