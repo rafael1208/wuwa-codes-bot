@@ -30,22 +30,6 @@ PRYDWEN = """
 </tbody></table></details>
 """
 
-GAME8 = """
-<h2>What can you do as a free member?</h2>
-<h2>Wuthering Waves Active Codes</h2>
-<h3>Permanent Redeem Codes</h3>
-<table class="a-table"><tr><th>All Active Code(s)</th></tr><tr><td>
- <div class="a-clipboard__container"><input type="text" class="a-clipboard__textInput"
-  value="WUTHERINGGIFT" readonly><div class="a-clipboard__copyMessage">Copied</div></div>
- <div class="align"><a>Astrite</a> x50</div></td></tr></table>
-<h2>How to Redeem Wuthering Waves Codes</h2>
-<h2>List of Past Redeem Codes</h2>
-<h3>All Past Redeem Codes</h3>
-<table class="a-table"><tr><th>Expired Codes and Past Rewards</th></tr>
- <tr><td><b class="a-bold">STARRYSTAGE2</b><div>Astrite <b class="a-bold">x80</b></div></td></tr>
- <tr><td><b class="a-bold">FALLINGSANCTUM</b></td></tr></table>
-"""
-
 GAMEMARKET_NOW = """
 <h1>Wuthering Waves Redeem Codes That Still Work and How to Redeem Them</h1>
 <h2>Active Wuthering Waves Codes</h2>
@@ -86,7 +70,7 @@ LEVVVEL = """
 <h2>How to redeem Wuthering Waves codes</h2><ol><li>Reach Union Level 2.</li></ol>
 """
 
-# Como as páginas estavam em 7/11, durante a live da 3.8 (Prydwen e Game8 atrasados)
+# Como as páginas estavam em 7/11, durante a live da 3.8 (Prydwen atrasado)
 GAMEMARKET_LIVE = """
 <h2>Active Wuthering Waves Codes</h2>
 <ul><li><strong>WUTHERINGGIFT</strong>: Astrite x50</li>
@@ -108,13 +92,6 @@ def test_prydwen():
     assert list(f.active) == ["WUTHERINGGIFT"]
     assert "Astrite ×50" in f.active["WUTHERINGGIFT"]
     assert {"FALLINGSANCTUM", "BLOOMINGFLOWERS", "BLACKSHORES"} <= f.expired
-
-
-def test_game8():
-    f = w.parse_game8(GAME8)
-    assert list(f.active) == ["WUTHERINGGIFT"]
-    assert "Astrite" in f.active["WUTHERINGGIFT"]
-    assert f.expired == {"STARRYSTAGE2", "FALLINGSANCTUM"}
 
 
 def test_gamemarket_now():
@@ -139,7 +116,6 @@ def test_levvvel_details_count_as_expired():
 def test_combine_today_only_permanent_code():
     res = w.combine({
         "Prydwen": w.parse_prydwen(PRYDWEN),
-        "Game8": w.parse_game8(GAME8),
         "GameMarket": w.parse_generic(GAMEMARKET_NOW),
         "Timesaver": w.parse_generic(TIMESAVER_NOW),
         "Levvvel": w.parse_generic(LEVVVEL),
@@ -152,7 +128,6 @@ def test_combine_livestream_window_catches_new_codes():
     """Cenário de 7/11: só os sites menores tinham os códigos da 3.8."""
     res = w.combine({
         "Prydwen": w.parse_prydwen(PRYDWEN),
-        "Game8": w.parse_game8(GAME8),
         "GameMarket": w.parse_generic(GAMEMARKET_LIVE),
         "Timesaver": w.parse_generic(TIMESAVER_LIVE),
     })

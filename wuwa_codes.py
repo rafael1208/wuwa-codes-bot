@@ -1,9 +1,9 @@
 """
 Robô de códigos do Wuthering Waves para Discord.
 
-- Lê várias páginas de códigos (Prydwen, Game8, GameMarket, Timesaver, Levvvel).
+- Lê várias páginas de códigos (Prydwen, GameMarket, Timesaver, Levvvel).
 - Um código só é enviado quando as fontes concordam que ele está ativo:
-    * Prydwen e Game8 valem 2 votos (marcam o status de cada código);
+    * Prydwen vale 2 votos (marca o status de cada código);
     * as outras valem 1 voto (o status vem dos títulos das seções).
   Basta 2 votos. Um site que lista o código como ativo e também como expirado
   não vota nele.
@@ -152,34 +152,6 @@ def format_rewards(parts: list) -> str:
     return ", ".join(items)
 
 
-# --------------------------------------------------------------------------- Game8
-
-def parse_game8(html: str) -> Found:
-    """Os códigos ativos ficam em caixas de copiar (<input class="a-clipboard__textInput">)
-    na seção "Active Codes"; os antigos ficam em negrito na seção "Past Redeem Codes"."""
-    soup = make_soup(html)
-    found = Found()
-    section = ""
-    for el in soup.find_all(["h2", "input", "b"]):
-        if el.name == "h2":
-            section = el.get_text(" ", strip=True).lower()
-            continue
-        if el.name == "input":
-            code = (el.get("value") or "").strip()
-            if "a-clipboard__textInput" in (el.get("class") or []) and is_code(code):
-                if "active" in section:
-                    td = el.find_parent("td")
-                    rewards = " ".join(td.get_text(" ", strip=True).split()) if td else ""
-                    found.active[code] = rewards.replace("Copied", "").strip()
-                elif "past" in section or "expired" in section:
-                    found.expired.add(code)
-        elif el.name == "b" and ("past" in section or "expired" in section):
-            code = el.get_text(strip=True)
-            if is_code(code):
-                found.expired.add(code)
-    return found
-
-
 # --------------------------------------------------------------------------- genérico
 
 EXPIRED_WORDS = re.compile(r"expired|past|no longer|inactive|not working|old codes", re.I)
@@ -236,7 +208,6 @@ def parse_generic(html: str) -> Found:
 
 SOURCES = [
     Source("Prydwen", "https://www.prydwen.gg/wuthering-waves/codes", parse_prydwen, 2),
-    Source("Game8", "https://game8.co/games/Wuthering-Waves/archives/453149", parse_game8, 2),
     Source("GameMarket",
            "https://gamemarket.gg/news/wuthering-waves/"
            "wuthering-waves-redeem-codes-that-still-work-and-how-to-redeem-them",
