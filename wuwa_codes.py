@@ -1,8 +1,12 @@
 """
 Robô de códigos do Wuthering Waves para Discord.
 
-- Lê a página de códigos do Prydwen.
-- Pega somente os códigos marcados como "Active".
+- Lê várias páginas de códigos (Prydwen, Game8, GameMarket, Timesaver, Levvvel).
+- Um código só é enviado quando as fontes concordam que ele está ativo:
+    * Prydwen e Game8 valem 2 votos (marcam o status de cada código);
+    * as outras valem 1 voto (o status vem dos títulos das seções).
+  Basta 2 votos. Um site que lista o código como ativo e também como expirado
+  não vota nele.
 - Envia para o webhook do Discord apenas os que ainda não foram enviados.
 - Guarda os já enviados em sent_codes.json (o GitHub Actions faz commit desse arquivo).
 
@@ -17,27 +21,48 @@ import os
 import re
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 import requests
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 try:  # imita o navegador Chrome (TLS), o que costuma passar pelo Cloudflare
     from curl_cffi import requests as cffi_requests
 except ImportError:  # pragma: no cover
     cffi_requests = None
 
-SOURCE_URL = "https://www.prydwen.gg/wuthering-waves/codes"
 STATE_FILE = Path(__file__).with_name("sent_codes.json")
 CODE_RE = re.compile(r"^[A-Z0-9]{6,24}$")
+# código no começo do texto, seguido de fim ou de um separador ("CODIGO: recompensas")
+LEADING_CODE_RE = re.compile(r"^([A-Z0-9]{6,24})(?:\s*$|\s*[:(–—-]\s*(.*))", re.S)
+PERMANENT_CODE = "WUTHERINGGIFT"
+VOTES_NEEDED = 2
+
 HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.prydwen.gg/",
 }
 
 
-def fetch_html(url: str = SOURCE_URL, attempts: int = 3) -> str:
+@dataclass
+class Found:
+    active: dict = field(default_factory=dict)  # {CODIGO: "recompensas"}
+    expired: set = field(default_factory=set)
+
+
+@dataclass
+class Source:
+    name: str
+    url: str
+    parser: Callable[[str], Found]
+    weight: int
+
+
+# --------------------------------------------------------------------------- download
+
+def fetch_html(url: str, attempts: int = 3) -> str:
     """Baixa a página fingindo ser o Chrome; tenta algumas vezes antes de desistir."""
     last_err = None
     for i in range(attempts):
@@ -52,24 +77,31 @@ def fetch_html(url: str = SOURCE_URL, attempts: int = 3) -> str:
             return resp.text
         except Exception as e:  # 403 do Cloudflare, timeout etc.
             last_err = e
-            print(f"Tentativa {i + 1}/{attempts} falhou: {e}")
+            print(f"  tentativa {i + 1}/{attempts} falhou: {e}")
             if i < attempts - 1:
                 time.sleep(5 * (i + 1))
     raise last_err
 
 
-def parse_active_codes(html: str) -> dict:
-    """Devolve {CODIGO: "recompensas"} só para os códigos marcados como ativos.
-
-    A página lista cada código dentro de <code>, seguido das recompensas e de um
-    selo "Active" ou "Expired". Os códigos da tabela de expirados não têm selo,
-    então ficam de fora.
-    """
+def make_soup(html: str) -> BeautifulSoup:
     soup = BeautifulSoup(html, "html.parser")
-    for tag in soup(["script", "style", "noscript"]):
+    for tag in soup(["script", "style", "noscript", "svg"]):
         tag.decompose()
+    return soup
 
-    active = {}
+
+def is_code(text: str) -> bool:
+    # precisa ter pelo menos uma letra (evita números soltos como 100000)
+    return bool(CODE_RE.match(text)) and any(c.isalpha() for c in text)
+
+
+# --------------------------------------------------------------------------- Prydwen
+
+def parse_prydwen(html: str) -> Found:
+    """Cada código fica num <code>, seguido das recompensas e de um selo
+    "Active" ou "Expired". Os códigos dentro de tabelas são o arquivo de expirados."""
+    soup = make_soup(html)
+    found = Found()
     current = None
     parts = []
 
@@ -84,25 +116,29 @@ def parse_active_codes(html: str) -> dict:
         if node.find_parent(["h1", "h2"]):  # nova seção: zera o código atual
             current = None
             continue
-        if parent == "code" and CODE_RE.match(text):
-            # códigos dentro de tabelas são a lista de expirados
-            current = None if node.find_parent("table") else text
+        if parent == "code" and is_code(text):
+            if node.find_parent("table"):
+                found.expired.add(text)
+                current = None
+            else:
+                current = text
             parts = []
             continue
         if current is None:
             continue
 
         if text == "Active":
-            active[current] = format_rewards(parts)
+            found.active[current] = format_rewards(parts)
             current = None
         elif text == "Expired":
+            found.expired.add(current)
             current = None
         else:
             parts.append(text)
             if len(parts) > 60:  # segurança: nunca achou o selo
                 current = None
 
-    return active
+    return found
 
 
 def format_rewards(parts: list) -> str:
@@ -115,6 +151,157 @@ def format_rewards(parts: list) -> str:
             items.append(p)
     return ", ".join(items)
 
+
+# --------------------------------------------------------------------------- Game8
+
+def parse_game8(html: str) -> Found:
+    """Os códigos ativos ficam em caixas de copiar (<input class="a-clipboard__textInput">)
+    na seção "Active Codes"; os antigos ficam em negrito na seção "Past Redeem Codes"."""
+    soup = make_soup(html)
+    found = Found()
+    section = ""
+    for el in soup.find_all(["h2", "input", "b"]):
+        if el.name == "h2":
+            section = el.get_text(" ", strip=True).lower()
+            continue
+        if el.name == "input":
+            code = (el.get("value") or "").strip()
+            if "a-clipboard__textInput" in (el.get("class") or []) and is_code(code):
+                if "active" in section:
+                    td = el.find_parent("td")
+                    rewards = " ".join(td.get_text(" ", strip=True).split()) if td else ""
+                    found.active[code] = rewards.replace("Copied", "").strip()
+                elif "past" in section or "expired" in section:
+                    found.expired.add(code)
+        elif el.name == "b" and ("past" in section or "expired" in section):
+            code = el.get_text(strip=True)
+            if is_code(code):
+                found.expired.add(code)
+    return found
+
+
+# --------------------------------------------------------------------------- genérico
+
+EXPIRED_WORDS = re.compile(r"expired|past|no longer|inactive|not working|old codes", re.I)
+ACTIVE_WORDS = re.compile(r"\bactive\b|working|livestream|new codes?|current|valid", re.I)
+CANDIDATE_TAGS = ["code", "strong", "b", "td", "li", "input"]
+
+
+def classify_heading(text: str):
+    if EXPIRED_WORDS.search(text):
+        return "expired"
+    if ACTIVE_WORDS.search(text):
+        return "active"
+    return None
+
+
+def parse_generic(html: str) -> Found:
+    """Para sites em formato de artigo: o status de cada código vem do título da seção
+    em que ele aparece (ex.: "Active codes" / "Expired codes"). Subtítulos sem palavra-chave
+    herdam o status do título acima. Códigos dentro de <details> (listas recolhidas)
+    contam como expirados."""
+    soup = make_soup(html)
+    found = Found()
+    levels = {}  # nível do título -> status
+
+    for el in soup.find_all(["h2", "h3", "h4"] + CANDIDATE_TAGS):
+        if el.name in ("h2", "h3", "h4"):
+            lvl = int(el.name[1])
+            for k in [k for k in levels if k >= lvl]:
+                del levels[k]
+            levels[lvl] = classify_heading(el.get_text(" ", strip=True))
+            continue
+
+        status = next((levels[k] for k in sorted(levels, reverse=True) if levels[k]), None)
+        if el.find_parent("details"):
+            status = "expired"
+        if status is None:
+            continue
+
+        if el.name == "input":
+            text = (el.get("value") or "").strip()
+        else:
+            text = " ".join(el.get_text(" ", strip=True).split())
+        m = LEADING_CODE_RE.match(text)
+        if not m or not is_code(m.group(1)):
+            continue
+        code = m.group(1)
+        if status == "expired":
+            found.expired.add(code)
+        elif code not in found.active or not found.active[code]:
+            found.active[code] = (m.group(2) or "").strip()
+
+    return found
+
+
+SOURCES = [
+    Source("Prydwen", "https://www.prydwen.gg/wuthering-waves/codes", parse_prydwen, 2),
+    Source("Game8", "https://game8.co/games/Wuthering-Waves/archives/453149", parse_game8, 2),
+    Source("GameMarket",
+           "https://gamemarket.gg/news/wuthering-waves/"
+           "wuthering-waves-redeem-codes-that-still-work-and-how-to-redeem-them",
+           parse_generic, 1),
+    Source("Timesaver", "https://timesaver.gg/blog/wuthering-waves-codes", parse_generic, 1),
+    Source("Levvvel", "https://levvvel.com/wuthering-waves-codes/", parse_generic, 1),
+]
+
+
+# --------------------------------------------------------------------------- junção
+
+@dataclass
+class Result:
+    confirmed: dict  # {CODIGO: (recompensas, [fontes])}
+    pending: dict    # códigos vistos como ativos, mas sem votos suficientes
+    ok_sources: list
+    failed_sources: list
+
+
+def combine(results: dict) -> Result:
+    """results = {nome_da_fonte: Found}; só usa as fontes que responderam."""
+    weights = {s.name: s.weight for s in SOURCES}
+    votes, seen_by, rewards = {}, {}, {}
+
+    for name, found in results.items():
+        for code, rew in found.active.items():
+            # Cada site só invalida os próprios códigos: se ele mesmo lista o código
+            # como expirado, não vota. Não usamos o "expirado" de um site para anular
+            # outro porque a Kuro às vezes reaproveita códigos antigos.
+            if code in found.expired:
+                continue
+            votes[code] = votes.get(code, 0) + weights.get(name, 1)
+            seen_by.setdefault(code, []).append(name)
+            # prefere a descrição de recompensas mais completa
+            if len(rew) > len(rewards.get(code, "")):
+                rewards[code] = rew
+
+    confirmed, pending = {}, {}
+    for code, v in votes.items():
+        target = confirmed if v >= VOTES_NEEDED else pending
+        target[code] = (rewards.get(code, ""), seen_by[code])
+    return Result(confirmed, pending, list(results), [])
+
+
+def collect() -> Result:
+    results, failed = {}, []
+    for src in SOURCES:
+        print(f"[{src.name}] {src.url}")
+        try:
+            found = src.parser(fetch_html(src.url))
+        except Exception as e:
+            print(f"::warning::{src.name}: não consegui ler a página ({e})")
+            failed.append(src.name)
+            continue
+        print(f"  ativos: {sorted(found.active)} | expirados: {len(found.expired)}")
+        if not found.active:
+            print(f"::warning::{src.name}: nenhum código ativo encontrado; "
+                  "a página pode ter mudado de formato.")
+        results[src.name] = found
+    res = combine(results)
+    res.failed_sources = failed
+    return res
+
+
+# --------------------------------------------------------------------------- Discord
 
 def load_sent() -> list:
     if STATE_FILE.exists():
@@ -129,7 +316,7 @@ def save_sent(codes: list) -> None:
     STATE_FILE.write_text(json.dumps(sorted(set(codes)), indent=2) + "\n", encoding="utf-8")
 
 
-def build_payload(code: str, rewards: str, role_id: str = "") -> dict:
+def build_payload(code: str, rewards: str, sources: list, role_id: str = "") -> dict:
     mention = f"<@&{role_id}> " if role_id else ""
     return {
         "username": "Códigos WuWa",
@@ -145,7 +332,7 @@ def build_payload(code: str, rewards: str, role_id: str = "") -> dict:
                     "Os códigos diferenciam maiúsculas e minúsculas."
                 ),
                 "color": 0x3BA7C9,
-                "footer": {"text": "Fonte: prydwen.gg"},
+                "footer": {"text": "Fontes: " + ", ".join(sources)},
             }
         ],
     }
@@ -170,26 +357,26 @@ def main() -> int:
         print("Falta o segredo DISCORD_WEBHOOK_URL.")
         return 1
 
-    try:
-        html = fetch_html()
-    except Exception as e:
-        # Bloqueio temporário do site: avisa no log e tenta de novo na próxima execução,
-        # sem marcar o workflow como falho.
-        print(f"::warning::Não consegui acessar {SOURCE_URL} ({e}). Tento de novo na próxima execução.")
+    res = collect()
+    if not res.ok_sources:
+        # Todas bloquearam/caíram: tenta de novo na próxima execução sem marcar falha.
+        print("::warning::Nenhuma fonte respondeu. Tento de novo na próxima execução.")
         return 0
 
-    active = parse_active_codes(html)
-    if not active:
-        # O WUTHERINGGIFT é fixo; se nada foi encontrado, a página mudou de formato.
-        print("Nenhum código ativo encontrado. A página pode ter mudado de formato.")
-        return 1
+    for code, (_, srcs) in sorted(res.pending.items()):
+        print(f"::warning::{code} aparece como ativo só em {', '.join(srcs)}; "
+              f"aguardando confirmação de outra fonte.")
+    if PERMANENT_CODE not in res.confirmed and len(res.ok_sources) >= 2:
+        print(f"::warning::{PERMANENT_CODE} (código fixo) não foi confirmado; "
+              "alguma página pode ter mudado de formato.")
 
     sent = load_sent()
-    new = [c for c in active if c not in sent]
-    print(f"Ativos: {list(active)} | Novos: {new}")
+    new = [c for c in res.confirmed if c not in sent]
+    print(f"Confirmados: {sorted(res.confirmed)} | Novos: {new}")
 
     for code in new:
-        payload = build_payload(code, active[code], role_id)
+        rewards, srcs = res.confirmed[code]
+        payload = build_payload(code, rewards, srcs, role_id)
         if dry:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         else:

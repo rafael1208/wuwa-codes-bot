@@ -1,6 +1,6 @@
 # Robô de códigos do Wuthering Waves no Discord
 
-Verifica a cada 30 minutos os códigos ativos (fonte: prydwen.gg) e posta no seu canal
+Verifica a cada 30 minutos os códigos ativos (fontes: Prydwen, Game8, GameMarket, Timesaver e Levvvel; um código só é postado quando as fontes concordam) e posta no seu canal
 apenas os que ainda não foram enviados. Na primeira execução, publica os ativos atuais
 (ex.: WUTHERINGGIFT); depois, só os novos.
 
