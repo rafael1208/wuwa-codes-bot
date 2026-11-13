@@ -286,15 +286,23 @@ def collect() -> Result:
     for src in SOURCES:
         print(f"[{src.name}] {src.url}")
         try:
-            found = src.parser(fetch_html(src.url))
+            html = fetch_html(src.url)
+            found = src.parser(html)
         except Exception as e:
             print(f"::warning::{src.name}: não consegui ler a página ({e})")
             failed.append(src.name)
             continue
-        print(f"  ativos: {sorted(found.active)} | expirados: {len(found.expired)}")
-        if not found.active:
-            print(f"::warning::{src.name}: nenhum código ativo encontrado; "
-                  "a página pode ter mudado de formato.")
+        valid = sorted(c for c in found.active if c not in found.expired)
+        print(f"  ativos: {valid} | expirados: {len(found.expired)}")
+        if not valid:
+            title = make_soup(html).title
+            title = title.get_text(strip=True) if title else "?"
+            print(f"::warning::{src.name}: nenhum código ativo encontrado "
+                  f"(página: {len(html)} bytes, título: {title!r}); "
+                  "o site pode ter mudado de formato ou bloqueado o acesso.")
+            if not found.expired:  # página sem nada útil: não conta como fonte válida
+                failed.append(src.name)
+                continue
         results[src.name] = found
     res = combine(results)
     res.failed_sources = failed
